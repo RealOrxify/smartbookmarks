@@ -339,6 +339,150 @@
             background: rgba(255, 255, 255, 0.2);
         }
 
+        /* Search and Filter */
+        .search-filter-bar {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .search-box {
+            flex: 1;
+            min-width: 200px;
+            position: relative;
+        }
+
+        .search-box::before {
+            content: '🔍';
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 12px 16px 12px 45px;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            color: white;
+            font-size: 1rem;
+            position: relative;
+        }
+
+        .sort-select {
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            color: white;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+
+        .sort-select option {
+            background: #667eea;
+            color: white;
+        }
+
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .toast {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 16px 20px;
+            color: white;
+            min-width: 300px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .toast.success {
+            border-left: 4px solid rgba(77, 255, 136, 0.8);
+        }
+
+        .toast.error {
+            border-left: 4px solid rgba(255, 77, 77, 0.8);
+        }
+
+        .toast.info {
+            border-left: 4px solid rgba(77, 136, 255, 0.8);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast-close {
+            margin-left: auto;
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            opacity: 0.7;
+            transition: opacity 0.3s;
+        }
+
+        .toast-close:hover {
+            opacity: 1;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .bookmark-count {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+
         @media (max-width: 768px) {
             .header h1 {
                 font-size: 2rem;
@@ -350,6 +494,19 @@
 
             .form-actions {
                 flex-direction: column;
+            }
+
+            .search-filter-bar {
+                flex-direction: column;
+            }
+
+            .toast-container {
+                left: 20px;
+                right: 20px;
+            }
+
+            .toast {
+                min-width: auto;
             }
         }
     </style>
@@ -387,10 +544,28 @@
             </form>
         </div>
 
+        <!-- Search and Filter Bar -->
+        <div class="glass search-filter-bar">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search bookmarks by title, URL, tags, or description..." oninput="filterBookmarks()">
+            </div>
+            <select id="sortSelect" class="sort-select" onchange="sortBookmarks()">
+                <option value="date-desc">Sort by: Date (Newest)</option>
+                <option value="date-asc">Sort by: Date (Oldest)</option>
+                <option value="title-asc">Sort by: Title (A-Z)</option>
+                <option value="title-desc">Sort by: Title (Z-A)</option>
+                <option value="url-asc">Sort by: URL (A-Z)</option>
+            </select>
+        </div>
+
         <div id="bookmarksContainer" class="bookmarks-grid">
             <!-- Bookmarks will be loaded here -->
         </div>
+        <div id="bookmarkCount" class="bookmark-count"></div>
     </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
 
     <!-- Edit Modal -->
     <div id="editModal" class="modal">
@@ -427,6 +602,7 @@
 
     <script>
         let bookmarks = [];
+        let filteredBookmarks = [];
         let editingId = null;
 
         // Load bookmarks on page load
@@ -438,29 +614,124 @@
             document.getElementById('editForm').addEventListener('submit', handleEdit);
         });
 
+        // Toast Notification System
+        function showToast(message, type = 'info', duration = 3000) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            const icons = {
+                success: '✅',
+                error: '❌',
+                info: 'ℹ️',
+                warning: '⚠️'
+            };
+            
+            toast.innerHTML = `
+                <span>${icons[type] || icons.info}</span>
+                <span>${escapeHtml(message)}</span>
+                <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+            `;
+            
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
+        // URL Validation
+        function isValidUrl(string) {
+            try {
+                const url = new URL(string);
+                return url.protocol === 'http:' || url.protocol === 'https:';
+            } catch (_) {
+                return false;
+            }
+        }
+
+        // Normalize URL (add https:// if missing)
+        function normalizeUrl(url) {
+            url = url.trim();
+            if (!url.match(/^https?:\/\//i)) {
+                return 'https://' + url;
+            }
+            return url;
+        }
+
+        // Check for duplicate URLs
+        function isDuplicateUrl(url, excludeId = null) {
+            const normalizedUrl = normalizeUrl(url).toLowerCase();
+            return bookmarks.some(b => {
+                if (excludeId && b.id === excludeId) return false;
+                return normalizeUrl(b.url).toLowerCase() === normalizedUrl;
+            });
+        }
+
+        // Loading state management
+        function setLoading(buttonId, isLoading) {
+            const btn = document.getElementById(buttonId);
+            if (!btn) return;
+            
+            if (isLoading) {
+                btn.disabled = true;
+                const originalText = btn.innerHTML;
+                btn.dataset.originalText = originalText;
+                btn.innerHTML = '<span class="spinner"></span>Loading...';
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = btn.dataset.originalText || btn.textContent;
+            }
+        }
+
         async function loadBookmarks() {
             try {
+                setLoading('submitBtn', true);
                 const response = await fetch('/api/bookmarks');
+                if (!response.ok) throw new Error('Failed to load bookmarks');
                 bookmarks = await response.json();
-                renderBookmarks();
+                filteredBookmarks = [...bookmarks];
+                applyFilters();
             } catch (error) {
                 console.error('Error loading bookmarks:', error);
+                showToast('Failed to load bookmarks', 'error');
+            } finally {
+                setLoading('submitBtn', false);
             }
         }
 
         async function handleSubmit(e) {
             e.preventDefault();
             const formData = new FormData(e.target);
+            let url = formData.get('url').trim();
+            const title = formData.get('title').trim();
+            const description = formData.get('description').trim();
             const tags = formData.get('tags') ? formData.get('tags').split(',').map(t => t.trim()).filter(t => t) : [];
 
+            // Validate URL
+            url = normalizeUrl(url);
+            if (!isValidUrl(url)) {
+                showToast('Please enter a valid URL', 'error');
+                return;
+            }
+
+            // Check for duplicates
+            if (isDuplicateUrl(url)) {
+                if (!confirm('A bookmark with this URL already exists. Do you want to add it anyway?')) {
+                    return;
+                }
+            }
+
             const bookmark = {
-                title: formData.get('title'),
-                url: formData.get('url'),
-                description: formData.get('description') || '',
+                title: title,
+                url: url,
+                description: description,
                 tags: tags
             };
 
             try {
+                setLoading('submitBtn', true);
                 const response = await fetch('/api/bookmarks', {
                     method: 'POST',
                     headers: {
@@ -469,29 +740,56 @@
                     body: JSON.stringify(bookmark)
                 });
 
+                const data = await response.json();
+                
                 if (response.ok) {
+                    showToast('Bookmark added successfully!', 'success');
                     clearForm();
-                    loadBookmarks();
+                    await loadBookmarks();
+                } else {
+                    showToast(data.error || 'Error adding bookmark', 'error');
                 }
             } catch (error) {
                 console.error('Error adding bookmark:', error);
-                alert('Error adding bookmark. Please try again.');
+                showToast('Error adding bookmark. Please try again.', 'error');
+            } finally {
+                setLoading('submitBtn', false);
             }
         }
 
         async function handleEdit(e) {
             e.preventDefault();
+            let url = document.getElementById('editUrl').value.trim();
+            const title = document.getElementById('editTitle').value.trim();
+            const description = document.getElementById('editDescription').value.trim();
             const tags = document.getElementById('editTags').value ? 
                 document.getElementById('editTags').value.split(',').map(t => t.trim()).filter(t => t) : [];
 
+            // Validate URL
+            url = normalizeUrl(url);
+            if (!isValidUrl(url)) {
+                showToast('Please enter a valid URL', 'error');
+                return;
+            }
+
+            // Check for duplicates (excluding current bookmark)
+            if (isDuplicateUrl(url, editingId)) {
+                showToast('A bookmark with this URL already exists', 'error');
+                return;
+            }
+
             const bookmark = {
-                title: document.getElementById('editTitle').value,
-                url: document.getElementById('editUrl').value,
-                description: document.getElementById('editDescription').value || '',
+                title: title,
+                url: url,
+                description: description,
                 tags: tags
             };
 
             try {
+                const submitBtn = document.querySelector('#editForm button[type="submit"]');
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner"></span>Saving...';
+
                 const response = await fetch(`/api/bookmarks/${editingId}`, {
                     method: 'PUT',
                     headers: {
@@ -500,18 +798,30 @@
                     body: JSON.stringify(bookmark)
                 });
 
+                const data = await response.json();
+
                 if (response.ok) {
+                    showToast('Bookmark updated successfully!', 'success');
                     closeEditModal();
-                    loadBookmarks();
+                    await loadBookmarks();
+                } else {
+                    showToast(data.error || 'Error updating bookmark', 'error');
                 }
             } catch (error) {
                 console.error('Error updating bookmark:', error);
-                alert('Error updating bookmark. Please try again.');
+                showToast('Error updating bookmark. Please try again.', 'error');
+            } finally {
+                const submitBtn = document.querySelector('#editForm button[type="submit"]');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Save Changes';
             }
         }
 
         async function deleteBookmark(id) {
-            if (!confirm('Are you sure you want to delete this bookmark?')) {
+            const bookmark = bookmarks.find(b => b.id === id);
+            if (!bookmark) return;
+
+            if (!confirm(`Are you sure you want to delete "${bookmark.title}"?`)) {
                 return;
             }
 
@@ -521,11 +831,14 @@
                 });
 
                 if (response.ok) {
-                    loadBookmarks();
+                    showToast('Bookmark deleted successfully', 'success');
+                    await loadBookmarks();
+                } else {
+                    showToast('Error deleting bookmark', 'error');
                 }
             } catch (error) {
                 console.error('Error deleting bookmark:', error);
-                alert('Error deleting bookmark. Please try again.');
+                showToast('Error deleting bookmark. Please try again.', 'error');
             }
         }
 
@@ -552,23 +865,74 @@
             document.getElementById('submitBtn').textContent = 'Add Bookmark';
         }
 
+        // Search and Filter
+        function filterBookmarks() {
+            applyFilters();
+        }
+
+        function applyFilters() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const sortValue = document.getElementById('sortSelect').value;
+
+            // Filter
+            filteredBookmarks = bookmarks.filter(bookmark => {
+                if (!searchTerm) return true;
+                
+                const searchableText = [
+                    bookmark.title,
+                    bookmark.url,
+                    bookmark.description || '',
+                    (bookmark.tags || []).join(' ')
+                ].join(' ').toLowerCase();
+                
+                return searchableText.includes(searchTerm);
+            });
+
+            // Sort
+            filteredBookmarks.sort((a, b) => {
+                switch(sortValue) {
+                    case 'date-desc':
+                        return new Date(b.created) - new Date(a.created);
+                    case 'date-asc':
+                        return new Date(a.created) - new Date(b.created);
+                    case 'title-asc':
+                        return a.title.localeCompare(b.title);
+                    case 'title-desc':
+                        return b.title.localeCompare(a.title);
+                    case 'url-asc':
+                        return a.url.localeCompare(b.url);
+                    default:
+                        return 0;
+                }
+            });
+
+            renderBookmarks();
+        }
+
+        function sortBookmarks() {
+            applyFilters();
+        }
+
         function renderBookmarks() {
             const container = document.getElementById('bookmarksContainer');
+            const countEl = document.getElementById('bookmarkCount');
             
-            if (bookmarks.length === 0) {
+            if (filteredBookmarks.length === 0) {
+                const searchTerm = document.getElementById('searchInput').value;
                 container.innerHTML = `
                     <div class="glass empty-state">
-                        <h2>📚 No bookmarks yet</h2>
-                        <p>Add your first bookmark to get started!</p>
+                        <h2>${searchTerm ? '🔍 No results found' : '📚 No bookmarks yet'}</h2>
+                        <p>${searchTerm ? 'Try a different search term' : 'Add your first bookmark to get started!'}</p>
                     </div>
                 `;
+                countEl.textContent = '';
                 return;
             }
 
-            container.innerHTML = bookmarks.map(bookmark => `
+            container.innerHTML = filteredBookmarks.map(bookmark => `
                 <div class="bookmark-card">
                     <div class="bookmark-title">
-                        <a href="${bookmark.url}" target="_blank" rel="noopener noreferrer">
+                        <a href="${escapeHtml(bookmark.url)}" target="_blank" rel="noopener noreferrer">
                             ${escapeHtml(bookmark.title)}
                         </a>
                     </div>
@@ -585,6 +949,15 @@
                     </div>
                 </div>
             `).join('');
+
+            // Update count
+            const total = bookmarks.length;
+            const showing = filteredBookmarks.length;
+            if (showing < total) {
+                countEl.textContent = `Showing ${showing} of ${total} bookmarks`;
+            } else {
+                countEl.textContent = total === 1 ? '1 bookmark' : `${total} bookmarks`;
+            }
         }
 
         function escapeHtml(text) {
@@ -594,10 +967,12 @@
         }
 
         function exportBookmarks() {
+            showToast('Exporting bookmarks...', 'info');
             window.location.href = '/api/export';
         }
 
         function exportNetscape() {
+            showToast('Exporting bookmarks for browser import...', 'info');
             window.location.href = '/api/export/netscape';
         }
 

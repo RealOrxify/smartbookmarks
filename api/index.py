@@ -2,6 +2,8 @@ from flask import Flask, render_template, request, jsonify
 import json
 import os
 from datetime import datetime
+from urllib.parse import urlparse
+import re
 
 app = Flask(__name__)
 
@@ -43,14 +45,43 @@ def get_bookmarks():
 def add_bookmark():
     """Add a new bookmark"""
     data = request.json
+    if data is None:
+        return jsonify({'error': 'Invalid JSON or missing Content-Type: application/json'}), 400
+    
+    # Validate URL
+    url = data.get('url', '').strip()
+    if not url:
+        return jsonify({'error': 'URL is required'}), 400
+    
+    # Normalize URL
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    # Validate URL format
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return jsonify({'error': 'Invalid URL format'}), 400
+    except:
+        return jsonify({'error': 'Invalid URL format'}), 400
+    
     bookmarks = load_bookmarks()
+    
+    # Check for duplicate URL (case-insensitive)
+    normalized_url = url.lower().rstrip('/')
+    for bookmark in bookmarks:
+        existing_url = bookmark.get('url', '').lower().rstrip('/')
+        if existing_url == normalized_url:
+            return jsonify({'error': 'A bookmark with this URL already exists'}), 409
     
     new_bookmark = {
         'id': str(datetime.now().timestamp()),
-        'title': data.get('title', ''),
-        'url': data.get('url', ''),
-        'description': data.get('description', ''),
+        'title': data.get('title', '').strip(),
+        'url': url,
+        'description': data.get('description', '').strip(),
         'tags': data.get('tags', []),
+        'category': data.get('category', '').strip() or 'Uncategorized',
         'created': datetime.now().isoformat()
     }
     
@@ -62,18 +93,62 @@ def add_bookmark():
 def update_bookmark(bookmark_id):
     """Update a bookmark"""
     data = request.json
+    if data is None:
+        return jsonify({'error': 'Invalid JSON or missing Content-Type: application/json'}), 400
+    
     bookmarks = load_bookmarks()
     
+    # Find the bookmark
+    bookmark_to_update = None
     for bookmark in bookmarks:
         if bookmark['id'] == bookmark_id:
-            bookmark['title'] = data.get('title', bookmark['title'])
-            bookmark['url'] = data.get('url', bookmark['url'])
-            bookmark['description'] = data.get('description', bookmark.get('description', ''))
-            bookmark['tags'] = data.get('tags', bookmark.get('tags', []))
-            save_bookmarks(bookmarks)
-            return jsonify(bookmark)
+            bookmark_to_update = bookmark
+            break
     
-    return jsonify({'error': 'Bookmark not found'}), 404
+    if not bookmark_to_update:
+        return jsonify({'error': 'Bookmark not found'}), 404
+    
+    # Validate and normalize URL if provided
+    if 'url' in data:
+        url = data.get('url', '').strip()
+        if not url:
+            return jsonify({'error': 'URL cannot be empty'}), 400
+        
+        # Normalize URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        # Validate URL format
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return jsonify({'error': 'Invalid URL format'}), 400
+        except:
+            return jsonify({'error': 'Invalid URL format'}), 400
+        
+        # Check for duplicate URL (excluding current bookmark)
+        normalized_url = url.lower().rstrip('/')
+        for bookmark in bookmarks:
+            if bookmark['id'] != bookmark_id:
+                existing_url = bookmark.get('url', '').lower().rstrip('/')
+                if existing_url == normalized_url:
+                    return jsonify({'error': 'A bookmark with this URL already exists'}), 409
+        
+        bookmark_to_update['url'] = url
+    
+    # Update other fields
+    if 'title' in data:
+        bookmark_to_update['title'] = data.get('title', '').strip()
+    if 'description' in data:
+        bookmark_to_update['description'] = data.get('description', '').strip()
+    if 'tags' in data:
+        bookmark_to_update['tags'] = data.get('tags', [])
+    if 'category' in data:
+        bookmark_to_update['category'] = data.get('category', '').strip() or 'Uncategorized'
+    
+    save_bookmarks(bookmarks)
+    return jsonify(bookmark_to_update)
 
 @app.route('/api/bookmarks/<bookmark_id>', methods=['DELETE'])
 def delete_bookmark(bookmark_id):
@@ -82,6 +157,119 @@ def delete_bookmark(bookmark_id):
     bookmarks = [b for b in bookmarks if b['id'] != bookmark_id]
     save_bookmarks(bookmarks)
     return jsonify({'success': True})
+
+@app.route('/api/bookmarks/bulk', methods=['DELETE'])
+def bulk_delete_bookmarks():
+    """Delete multiple bookmarks"""
+    data = request.json
+    if data is None or 'ids' not in data:
+        return jsonify({'error': 'Invalid JSON or missing ids array'}), 400
+    
+    bookmark_ids = data.get('ids', [])
+    if not isinstance(bookmark_ids, list):
+        return jsonify({'error': 'ids must be an array'}), 400
+    
+    bookmarks = load_bookmarks()
+    original_count = len(bookmarks)
+    bookmarks = [b for b in bookmarks if b['id'] not in bookmark_ids]
+    save_bookmarks(bookmarks)
+    
+    deleted_count = original_count - len(bookmarks)
+    return jsonify({'success': True, 'deleted': deleted_count})
+
+@app.route('/api/categories', methods=['GET'])
+def get_categories():
+    """Get all unique categories"""
+    bookmarks = load_bookmarks()
+    categories = set()
+    for bookmark in bookmarks:
+        category = bookmark.get('category', 'Uncategorized')
+        if category:
+            categories.add(category)
+    return jsonify(sorted(list(categories)))
+
+@app.route('/api/import', methods=['POST'])
+def import_bookmarks():
+    """Import bookmarks from Netscape bookmark format"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    try:
+        content = file.read().decode('utf-8')
+        imported_bookmarks = parse_netscape_bookmarks(content)
+        
+        if not imported_bookmarks:
+            return jsonify({'error': 'No bookmarks found in file'}), 400
+        
+        bookmarks = load_bookmarks()
+        existing_urls = {b.get('url', '').lower().rstrip('/') for b in bookmarks}
+        
+        new_count = 0
+        skipped_count = 0
+        
+        for imported in imported_bookmarks:
+            normalized_url = imported['url'].lower().rstrip('/')
+            if normalized_url not in existing_urls:
+                imported['id'] = str(datetime.now().timestamp() + new_count)
+                imported['category'] = imported.get('category', 'Imported')
+                imported['tags'] = imported.get('tags', [])
+                imported['created'] = imported.get('created', datetime.now().isoformat())
+                bookmarks.append(imported)
+                existing_urls.add(normalized_url)
+                new_count += 1
+            else:
+                skipped_count += 1
+        
+        save_bookmarks(bookmarks)
+        return jsonify({
+            'success': True,
+            'imported': new_count,
+            'skipped': skipped_count,
+            'total': len(imported_bookmarks)
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error importing bookmarks: {str(e)}'}), 400
+
+def parse_netscape_bookmarks(content):
+    """Parse Netscape bookmark format HTML"""
+    bookmarks = []
+    
+    # Extract all <A> tags with HREF
+    pattern = r'<A\s+HREF="([^"]+)"[^>]*ADD_DATE="?(\d+)"?[^>]*>([^<]+)</A>'
+    matches = re.finditer(pattern, content, re.IGNORECASE)
+    
+    for match in matches:
+        url = match.group(1)
+        add_date = match.group(2)
+        title = match.group(3).strip()
+        
+        # Try to find description (DD tag after the A tag)
+        desc_pattern = r'<DD>([^<]+)'
+        desc_match = re.search(desc_pattern, content[match.end():match.end()+200])
+        description = desc_match.group(1).strip() if desc_match else ''
+        
+        # Parse date
+        try:
+            created_date = datetime.fromtimestamp(int(add_date)).isoformat()
+        except:
+            created_date = datetime.now().isoformat()
+        
+        # Normalize URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        bookmarks.append({
+            'title': title or 'Untitled',
+            'url': url,
+            'description': description,
+            'created': created_date
+        })
+    
+    return bookmarks
 
 @app.route('/api/export', methods=['GET'])
 def export_bookmarks():
@@ -324,6 +512,15 @@ def export_bookmarks_netscape():
     """Export bookmarks as HTML (Netscape bookmark format for browser import)"""
     bookmarks = load_bookmarks()
     
+    # HTML escape function to prevent XSS attacks
+    def escape_html(text):
+        return (str(text)
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;')
+            .replace("'", '&#x27;'))
+    
     html = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <!-- This is an automatically generated file.
      It will be read and overwritten.
@@ -340,9 +537,14 @@ def export_bookmarks_netscape():
         description = bookmark.get('description', '')
         add_date = int(datetime.fromisoformat(bookmark.get('created', datetime.now().isoformat())).timestamp())
         
-        html += f'    <DT><A HREF="{url}" ADD_DATE="{add_date}">{title}</A>\n'
+        # Escape all user input to prevent XSS
+        escaped_title = escape_html(title)
+        escaped_url = escape_html(url)
+        escaped_description = escape_html(description) if description else ''
+        
+        html += f'    <DT><A HREF="{escaped_url}" ADD_DATE="{add_date}">{escaped_title}</A>\n'
         if description:
-            html += f'    <DD>{description}\n'
+            html += f'    <DD>{escaped_description}\n'
     
     html += '</DL><p>'
     
